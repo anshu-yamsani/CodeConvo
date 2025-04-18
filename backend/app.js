@@ -14,6 +14,11 @@ connect();
 const app=express();
 const _dirname=path.resolve();
 
+app.use((req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    next();
+  });
 
 app.use(cors());
 app.use(morgan('dev'));
@@ -29,7 +34,7 @@ app.use("/ai",aiRoutes)
 app.use(express.static(path.join(_dirname, "/frontend/dist")));
 app.get('*',(_,res)=>{
     res.sendFile(path.resolve(_dirname,"frontend","dist","index.html"));
-})
+});
 
 
 export default app;

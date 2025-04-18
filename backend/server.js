@@ -1,103 +1,113 @@
 import 'dotenv/config';
 import http from 'http';
-import app from './app.js';
-import {Server} from 'socket.io';
-import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import jwt from 'jsonwebtoken';
+import { Server } from 'socket.io';
+
+import app from './app.js';
 import projectModel from './models/project.model.js';
 import { generateResult } from './services/ai.service.js';
 
+const port = process.env.PORT || 8080;
+const server = http.createServer(app);
 
-const port=process.env.PORT || 8080;
-const server=http.createServer(app);
-
-
-const io = new Server(server,{
-    cors:{
-        origin:'https://codeconvo.onrender.com'
-    }
+const io = new Server(server, {
+  cors: {
+    origin: 'https://codeconvo.onrender.com',
+    methods: ['GET', 'POST']
+  }
 });
 
-io.use(async(socket,next)=>{
+// Socket.io middleware for auth and project validation
+io.use(async (socket, next) => {
+  try {
+    const token =
+      socket.handshake.auth?.token ||
+      socket.handshake.headers.authorization?.split(' ')[1];
 
-    try{
+    const projectId = socket.handshake.query.projectId;
 
-        const token = socket.handshake.auth?.token||socket.handshake.headers.authorization?.split(' ')[1];
-        const projectId = socket.handshake.query.projectId;
-
-        if(!mongoose.Types.ObjectId.isValid(projectId)){
-            return next(new Error('Invalid projectId'));
-        }
-
-        socket.project = await projectModel.findById(projectId);
-
-        if(!token){
-            return next(new Error('Authentication error'))
-        }
-        const decoded=jwt.verify(token, process.env.JWT_SECRET);
-
-        if(!decoded){
-            return next(new Error('Authentication error'))
-        }
-
-        socket.user=decoded;
-
-        next();
-
-    }catch(error){
-        next(error)
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+      return next(new Error('Invalid projectId'));
     }
-    
-})
 
+    const project = await projectModel.findById(projectId);
+    if (!project) {
+      return next(new Error('Project not found'));
+    }
 
-io.on('connection', socket => {
-    socket.roomId=socket.project._id.toString();
-    console.log('a user connected')
+    socket.project = project;
 
-    
+    if (!token) {
+      return next(new Error('Authentication token missing'));
+    }
 
-    socket.join(socket.roomId);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!decoded) {
+      return next(new Error('Invalid token'));
+    }
 
+    socket.user = decoded;
 
-    socket.on('project-message', async data=>{
-
-        const message=data.message;
-
-        const aiIsPresentInMessage = message.includes('@ai');
-        socket.broadcast.to(socket.roomId).emit('project-message', data);
-
-
-        if(aiIsPresentInMessage){
-            
-            const prompt=message.replace('@ai','');
-
-            const result=await generateResult(prompt);
-
-            io.to(socket.roomId).emit('project-message',{
-                message:result,
-                sender:{
-                    _id:'ai',
-                    email:'AI'
-                }
-            })
-
-
-            return 
-        }
-
-        socket.broadcast.to(socket.roomId).emit('project-message', data);
-
-        
-    })
-
-  socket.on('disconnect', () => { 
-    console.log('user disconnected');
-    socket.leave(socket.roomId)
-   });
+    next();
+  } catch (error) {
+    console.error('Socket auth error:', error.message);
+    next(error);
+  }
 });
 
+// Socket.io event handling
+io.on('connection', (socket) => {
+  socket.roomId = socket.project._id.toString();
+  console.log(`✅ User connected to room ${socket.roomId}`);
 
-server.listen(port,()=>{
-    console.log(`Server is running on port ${port}`);
-})
+  socket.join(socket.roomId);
+
+  socket.on('project-message', async (data) => {
+    const message = data.message;
+    const aiIsPresentInMessage = message.includes('@ai');
+
+    // Broadcast user message
+    socket.broadcast.to(socket.roomId).emit('project-message', data);
+
+    // AI response if requested
+    if (aiIsPresentInMessage) {
+      try {
+        const prompt = message.replace('@ai', '').trim();
+        const result = await generateResult(prompt);
+
+        io.to(socket.roomId).emit('project-message', {
+          message: result,
+          sender: {
+            _id: 'ai',
+            email: 'AI'
+          }
+        });
+      } catch (err) {
+        console.error('AI generation failed:', err.message);
+      }
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('❌ User disconnected from room:', socket.roomId);
+    socket.leave(socket.roomId);
+  });
+});
+
+// ✅ MongoDB connection and server start
+mongoose
+  .connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+  })
+  .then(() => {
+    console.log('✅ Connected to MongoDB');
+    server.listen(port, () => {
+      console.log(`🚀 Server is running on port ${port}`);
+    });
+  })
+  .catch((error) => {
+    console.error('❌ MongoDB connection error:', error.message);
+    process.exit(1); // Exit app if DB connection fails
+  });
